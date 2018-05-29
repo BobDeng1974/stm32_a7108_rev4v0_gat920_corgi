@@ -30,6 +30,8 @@
 #include "rtc.h"
 #include "bsp_usart.h"
 #include "socketconfig.h"
+#include "socketextendconfig.h"
+#include "socketmodulationconfig.h"
 #include "socketpark.h"
 #include "calculationconfig.h"
 #include "iooutputconfig.h"
@@ -39,6 +41,8 @@
 #include "gatserial.h"
 #include "gatupload.h"
 #include "usrconfig.h"
+#include "lestcconfig.h"
+#include "lestcfunc.h"
 
 
 extern u8 ack_geted;
@@ -54,7 +58,7 @@ mvb_pkg_wvd_cfg			pkg_wvd_cfg;									//向上位机发送的配置数据包
 u8 						rssi_value[RECV_MAX];							//存储的rssi值
 USHORT 					output_ID[OUTPUT_MAX];							//输出端口的参数
 u8 OUTPUT_NUM;          													//可以使用的输出端口
-
+u32 Crossid;															//路口代码
 
 GPIO_TypeDef* OUTPUT_TYPE[16] =											//IO输出引脚
 {
@@ -265,6 +269,8 @@ int main(void)
 	}
 	FLASH_Lock();
 	socket_dev.ReadOutputID(output_ID);									//上电读取output_ID输出端口的参数到Socket流量数据包
+	socket_extend_dev.ReadOutputID(output_ID);								//上电读取output_ID输出端口的参数到SocketExtend流量数据包
+	socket_modulation_dev.ReadOutputID(output_ID);							//上电读取output_ID输出端口的参数到SocketModulation流量数据包
 	calculation_dev.ReadOutputID(output_ID);								//上电读取output_ID输出端口的参数到Calculation计算数据包
 	iooutput_dev.ReadOutputID(output_ID);									//上电读取output_ID输出端口的参数到IOOutput控制数据包
 
@@ -350,6 +356,22 @@ int main(void)
 		socket_dev.Init();
 	}
 #endif
+	
+#ifdef SOCKET_EXTEND_ENABLE												//使用SocketExtend
+	if (PlatformSocketExtend == SocketExtend_ENABLE) {						//根据SN选择是否使能SocketExtend
+		socket_extend_dev.Init();
+	}
+#endif
+	
+#ifdef SOCKET_MODULATION_ENABLE
+	if (PlatformSocketModulation == SocketModulation_ENABLE) {					//根据SN选择是否使能SocketModulation
+		socket_modulation_dev.Init();
+	}
+#endif
+	
+	if (PlatformLESTC == LESTC_ENABLE) {									//使用Lestc
+		LestcInitPackData();											//初始化Lestc
+	}
 
 #ifdef MODBUS_ENABLE													//使用ModBus
 	/* modbus init */
@@ -392,6 +414,18 @@ int main(void)
 		USR_K2_Dev.MonitorChange();										//监听RJ45参数是否改变
 	}
 #endif
+	
+	if (iooutput_dev.EventIRQnFlag == 1) {									//IO输出处理事件
+		iooutput_dev.EventIRQn();
+	}
+	
+	if (PlatformLESTC == LESTC_ENABLE) {
+		if (LestcSendTimeTick >= LestcSendTime) {
+			LestcSendTimeTick = 0;
+			LestcPacketData.CheckCode = LestcGetCheckCode(&LestcPacketData);
+			USART_Send(USART1, (u8 *)&LestcPacketData, sizeof(LestcPacketData));
+		}
+	}
 	
 #ifdef SOFTWAREIWDG
 		IWDG_ReloadCounter();											//软件看门狗喂狗
@@ -549,13 +583,65 @@ void hand_IOOutput(u8* buf)
 					}
 				}
 #endif
-				if (i < OUTPUT_NUM) {														//限定于16路输出范围
+				if (PlatformLESTC == LESTC_DISABLE) {
+					if (i < OUTPUT_NUM) {													//限定于16路输出范围
+						switch (param_recv.output_mode)
+						{
+						//输出方式0 : 跟随车辆输出
+						case 0:
+							if (param_recv.handle_lost != 1) {									//判断是否需要对丢包处理
+								GPIO_SetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							}
+							else {
+								iooutput_dev.Mode0IOCheck(i, carnumstate, 1);					//跟随车辆输出
+							}
+							break;
+						//输出方式1 : 车辆进入输出固定时长(记数)
+						case 1:
+							iooutput_dev.Mode1IOCheck(i, carnumstate, 1);						//车辆进入输出固定时长(记数)
+							break;
+						//输出方式2 : 车辆离开输出固定时长(记数)
+						case 2:
+							//NULL
+							break;
+						//输出方式3 : 车辆进入,离开时都输出固定时长(记数)
+						case 3:
+							iooutput_dev.Mode3IOCheck(i, carnumstate, 1);						//车辆进入,离开时都输出固定时长(记数)
+							break;
+						//输出方式4 : 车辆进入输出固定时长(不记数)
+						case 4:
+							iooutput_dev.Mode4IOCheck(i, carnumstate, 1);						//车辆进入输出固定时长(不记数)
+							break;
+						//输出方式5 : 车辆离开输出固定时长(不记数)
+						case 5:
+							//NULL
+							break;
+						//输出方式6 : 车辆进入,离开时都输出固定时长(不记数)
+						case 6:
+							iooutput_dev.Mode6IOCheck(i, carnumstate, 1);						//车辆进入,离开时都输出固定时长(不记数)
+							break;
+						//默认 输出方式0 : 跟随车辆输出
+						default :
+							if (param_recv.handle_lost != 1) {									//判断是否需要对丢包处理
+								GPIO_SetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							}
+							else {
+								iooutput_dev.Mode0IOCheck(i, carnumstate, 1);					//IO输出校验数据 跟随车辆输出
+							}
+							break;
+						}
+					}
+				}
+				else {
 					switch (param_recv.output_mode)
 					{
 					//输出方式0 : 跟随车辆输出
 					case 0:
 						if (param_recv.handle_lost != 1) {										//判断是否需要对丢包处理
-							GPIO_SetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							if (i < OUTPUT_NUM) {
+								GPIO_SetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							}
+							LestcCarInSetStatus(&LestcPacketData, i);
 						}
 						else {
 							iooutput_dev.Mode0IOCheck(i, carnumstate, 1);						//跟随车辆输出
@@ -588,7 +674,10 @@ void hand_IOOutput(u8* buf)
 					//默认 输出方式0 : 跟随车辆输出
 					default :
 						if (param_recv.handle_lost != 1) {										//判断是否需要对丢包处理
-							GPIO_SetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							if (i < OUTPUT_NUM) {
+								GPIO_SetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							}
+							LestcCarInSetStatus(&LestcPacketData, i);
 						}
 						else {
 							iooutput_dev.Mode0IOCheck(i, carnumstate, 1);						//IO输出校验数据 跟随车辆输出
@@ -600,8 +689,13 @@ void hand_IOOutput(u8* buf)
 #ifdef SOCKET_ENABLE
 				if (PlatformSocket == Socket_ENABLE) {											//根据SN选择是否使能Socket
 					if (INTERVALTIME == 0) {
-						if (SOCKET_RTC_CHECK == 0) {											//对好时间
-							SOCKET_ParkImplement(i, carnumstate);
+						if (PlatformSockettime == SocketTime_ENABLE) {							//判断是否开启对时项
+							if (SOCKET_RTC_CHECK == 0) {										//对好时间
+								SOCKET_ParkImplement(i, carnumstate, 1);
+							}
+						}
+						else if (PlatformSockettime == SocketTime_DISABLE) {
+							SOCKET_ParkImplement(i, carnumstate, 1);
 						}
 					}
 				}
@@ -627,13 +721,65 @@ void hand_IOOutput(u8* buf)
 					}
 				}
 #endif
-				if (i < OUTPUT_NUM) {														//限定于16路输出范围
+				if (PlatformLESTC == LESTC_DISABLE) {
+					if (i < OUTPUT_NUM) {													//限定于16路输出范围
+						switch (param_recv.output_mode)
+						{
+						//输出方式0 : 跟随车辆输出
+						case 0:
+							if (param_recv.handle_lost != 1) {									//判断是否需要对丢包处理
+								GPIO_ResetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							}
+							else {
+								iooutput_dev.Mode0IOCheck(i, carnumstate, 0);					//IO输出校验数据 跟随车辆输出
+							}
+							break;
+						//输出方式1 : 车辆进入输出固定时长(记数)
+						case 1:
+							//NULL
+							break;
+						//输出方式2 : 车辆离开输出固定时长(记数)
+						case 2:
+							iooutput_dev.Mode2IOCheck(i, carnumstate, 0);						//车辆离开输出固定时长(记数)
+							break;
+						//输出方式3 : 车辆进入,离开时都输出固定时长(记数)
+						case 3:
+							iooutput_dev.Mode3IOCheck(i, carnumstate, 0);						//车辆进入,离开时都输出固定时长(记数)
+							break;
+						//输出方式4 : 车辆进入输出固定时长(不记数)
+						case 4:
+							//NULL
+							break;
+						//输出方式5 : 车辆离开输出固定时长(不记数)
+						case 5:
+							iooutput_dev.Mode5IOCheck(i, carnumstate, 0);						//车辆离开输出固定时长(不记数)
+							break;
+						//输出方式6 : 车辆进入,离开时都输出固定时长(不记数)
+						case 6:
+							iooutput_dev.Mode6IOCheck(i, carnumstate, 0);						//车辆进入,离开时都输出固定时长(不记数)
+							break;
+						//默认 输出方式0 : 跟随车辆输出
+						default :
+							if (param_recv.handle_lost != 1) {									//判断是否需要对丢包处理
+								GPIO_ResetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							}
+							else {
+								iooutput_dev.Mode0IOCheck(i, carnumstate, 0);					//IO输出校验数据 跟随车辆输出
+							}
+							break;
+						}
+					}
+				}
+				else {
 					switch (param_recv.output_mode)
 					{
 					//输出方式0 : 跟随车辆输出
 					case 0:
 						if (param_recv.handle_lost != 1) {										//判断是否需要对丢包处理
-							GPIO_ResetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							if (i < OUTPUT_NUM) {
+								GPIO_ResetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							}
+							LestcCarOutSetStatus(&LestcPacketData, i);
 						}
 						else {
 							iooutput_dev.Mode0IOCheck(i, carnumstate, 0);						//IO输出校验数据 跟随车辆输出
@@ -666,7 +812,10 @@ void hand_IOOutput(u8* buf)
 					//默认 输出方式0 : 跟随车辆输出
 					default :
 						if (param_recv.handle_lost != 1) {										//判断是否需要对丢包处理
-							GPIO_ResetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							if (i < OUTPUT_NUM) {
+								GPIO_ResetBits(OUTPUT_TYPE[i],  OUTPUT_PIN[i]);
+							}
+							LestcCarOutSetStatus(&LestcPacketData, i);
 						}
 						else {
 							iooutput_dev.Mode0IOCheck(i, carnumstate, 0);						//IO输出校验数据 跟随车辆输出
@@ -678,8 +827,13 @@ void hand_IOOutput(u8* buf)
 #ifdef SOCKET_ENABLE
 				if (PlatformSocket == Socket_ENABLE) {											//根据SN选择是否使能Socket
 					if (INTERVALTIME == 0) {
-						if (SOCKET_RTC_CHECK == 0) {											//对好时间
-							SOCKET_ParkImplement(i, carnumstate);
+						if (PlatformSockettime == SocketTime_ENABLE) {							//判断是否开启对时项
+							if (SOCKET_RTC_CHECK == 0) {										//对好时间
+								SOCKET_ParkImplement(i, carnumstate, 0);
+							}
+						}
+						else if (PlatformSockettime == SocketTime_DISABLE) {
+							SOCKET_ParkImplement(i, carnumstate, 0);
 						}
 					}
 				}
@@ -811,7 +965,7 @@ void init_param_recv_default(u32 sn, u32 crossid)
   	param_recv.handle_lost 			= 1;									//是否对丢包进行处理
   	param_recv.check_repeat_time 		= 0;									//检查数据包是否重复的时间
 	param_recv.simple_mode 			= 1;									//RT数据模式是否是简单模式
-	param_recv.software_version		= 0x0108;								//软件版本号
+	param_recv.software_version		= 0x010C;								//软件版本号
 	param_recv.hardware_version		= 0x0400;								//硬件版本号
 
 	param_wvd_cfg.addr_dev 			= 0xffff;								//检测器序列号
@@ -832,13 +986,15 @@ void init_param_recv_default(u32 sn, u32 crossid)
 	param_net_cfg.device_bcast_h		= 0xC0A8;								//设备网络接口IPv4网关高字节
 	param_net_cfg.device_bcast_l		= 0x0101;								//设备网络接口IPv4网关低字节
 	param_net_cfg.socketA_connect_mode = 0x02;								//SOCKET接口A的连接方式
-	param_net_cfg.socketA_addr_h		= 0x6A0E;								//SOCKET接口A的服务器IP高字节
-	param_net_cfg.socketA_addr_l		= 0x8EA9;								//SOCKET接口A的服务器IP低字节
+	param_net_cfg.socketA_addr_h		= 0x6A0E;								//SOCKET接口A的服务器IP高字节 //0xC0A8 = 192.168
+	param_net_cfg.socketA_addr_l		= 0x8EA9;								//SOCKET接口A的服务器IP低字节 //0x016E = 1.110
 	param_net_cfg.socketA_port		= 4001;								//SOCKET接口A的服务器端口
 	param_net_cfg.socketA_connect_state= 0;									//SOCKET接口A的连接状态
 
 	memset(output_ID, 0x0, 2 * OUTPUT_MAX);
 	socket_dev.ReadOutputID(output_ID);									//读取output_ID输出端口的参数到Socket流量数据包
+	socket_extend_dev.ReadOutputID(output_ID);								//读取output_ID输出端口的参数到SocketExtend流量数据包
+	socket_modulation_dev.ReadOutputID(output_ID);							//读取output_ID输出端口的参数到SocketModulation流量数据包
 	calculation_dev.ReadOutputID(output_ID);								//读取output_ID输出端口的参数到Calculation计算数据包
 	iooutput_dev.ReadOutputID(output_ID);									//读取output_ID输出端口的参数到IOOutput控制数据包
 }
@@ -1235,6 +1391,8 @@ eMBRegHoldingCB( UCHAR * pucRegBuffer, USHORT usAddress, USHORT usNRegs, eMBRegi
 			}
 			param_save_to_flash();
 			socket_dev.ReadOutputID(output_ID);							//读取output_ID输出端口的参数到Socket流量数据包
+			socket_extend_dev.ReadOutputID(output_ID);						//读取output_ID输出端口的参数到SocketExtend流量数据包
+			socket_modulation_dev.ReadOutputID(output_ID);					//读取output_ID输出端口的参数到SocketModulation流量数据包
 			calculation_dev.ReadOutputID(output_ID);						//读取output_ID输出端口的参数到Calculation计算数据包
 			iooutput_dev.ReadOutputID(output_ID);							//读取output_ID输出端口的参数到IOOutput控制数据包
 		}
@@ -1265,6 +1423,8 @@ eMBRegHoldingCB( UCHAR * pucRegBuffer, USHORT usAddress, USHORT usNRegs, eMBRegi
 			}
 			param_save_to_flash();
 			socket_dev.ReadOutputID(output_ID);							//读取output_ID输出端口的参数到Socket流量数据包
+			socket_extend_dev.ReadOutputID(output_ID);						//读取output_ID输出端口的参数到SocketExtend流量数据包
+			socket_modulation_dev.ReadOutputID(output_ID);					//读取output_ID输出端口的参数到SocketModulation流量数据包
 			calculation_dev.ReadOutputID(output_ID);						//读取output_ID输出端口的参数到Calculation计算数据包
 			iooutput_dev.ReadOutputID(output_ID);							//读取output_ID输出端口的参数到IOOutput控制数据包
 #ifdef GAT920_ENABLE

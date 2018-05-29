@@ -42,12 +42,23 @@
 #include "socketinitialization.h"
 #include "socketpark.h"
 
+#include "socketextendconfig.h"
+#include "socketextendfunc.h"
+#include "socketextendinstantia.h"
+#include "socketextendinitialization.h"
+
+#include "socketmodulationconfig.h"
+#include "socketmodulationfunc.h"
+#include "socketmodulationinstantia.h"
+#include "socketmodulationinitialization.h"
+
 #include "calculationconfig.h"
 #include "iooutputconfig.h"
 
 #include "usrconfig.h"
 #include "usrserial.h"
 
+#include "lestcconfig.h"
 
 u8 startbytes[2],startbytes[2];
 u8 u8params[RECV_MAX][ACK_LENGTH];
@@ -307,6 +318,26 @@ void RTC_IRQHandler(void)
 		}
 #endif
 		
+#ifdef SOCKET_EXTEND_ENABLE
+		if (USRInitialized == USR_INITCONFIGOVER) {
+			if (PlatformSocketExtend == SocketExtend_ENABLE) {								//根据SN选择是否使能SocketExtend
+				if (INTERVALTIME != 0) {
+					socket_extend_dev.Implement(INTERVALTIME);								//SocketExtend协议到达指定时间处理
+				}
+			}
+		}
+#endif
+		
+#ifdef SOCKET_MODULATION_ENABLE
+		if (USRInitialized == USR_INITCONFIGOVER) {
+			if (PlatformSocketModulation == SocketModulation_ENABLE) {							//根据SN选择是否使能SocketModulation
+				if (INTERVALTIME != 0) {
+					socket_modulation_dev.Implement(INTERVALTIME * SOCKET_MODULATION_PROCESS_CYCLE);
+				}
+			}
+		}
+#endif
+		
 #ifdef GAT920_ENABLE
 		if (PlatformGat920 == Gat920_ENABLE) {												//根据SN选择是否使能GAT920
 			gat920_dev.UploadOvertime();													//Gat920协议超时重发处理
@@ -421,7 +452,12 @@ void EXTI0_IRQHandler(void)
 #ifdef SOCKET_ENABLE
 							if (PlatformSocket == Socket_ENABLE) {			//根据SN选择是否使能Socket
 								if (INTERVALTIME == 0) {
-									if (SOCKET_RTC_CHECK == 0) {			//对好时间
+									if (PlatformSockettime == SocketTime_ENABLE) {					//判断是否开启对时项
+										if (SOCKET_RTC_CHECK == 0) {			//对好时间
+											SOCKET_ParkImplementHeartbeat(u8params[u8numx]);
+										}
+									}
+									else if (PlatformSockettime == SocketTime_DISABLE) {
 										SOCKET_ParkImplementHeartbeat(u8params[u8numx]);
 									}
 								}
@@ -768,6 +804,18 @@ void TIM2_IRQHandler(void)
 				TIM_Cmd(TIM2, DISABLE);									//关闭TIM2
 			}
 #endif
+#ifdef SOCKET_EXTEND_ENABLE
+			if (PlatformSocketExtend == SocketExtend_ENABLE) {				//根据SN选择是否使能SocketExtend
+				SOCKET_EXTEND_RX_STA |= 1<<15;							//标记接收完成
+				TIM_Cmd(TIM2, DISABLE);									//关闭TIM2
+			}
+#endif
+#ifdef SOCKET_MODULATION_ENABLE
+			if (PlatformSocketModulation == SocketModulation_ENABLE) {			//根据SN选择是否使能SocketModulation
+				SOCKET_MODULATION_RX_STA |= 1<<15;							//标记接收完成
+				TIM_Cmd(TIM2, DISABLE);									//关闭TIM2
+			}
+#endif
 		}
 		else {														//USR配置中
 #ifdef USR_ENABLE
@@ -815,6 +863,8 @@ void TIM3_IRQHandler(void)
 			}
 		}
 		
+		iooutput_dev.EventIRQnFlag = 1;
+#if 0
 		switch (param_recv.output_mode)
 		{
 		//输出方式0 : 跟随车辆输出
@@ -853,6 +903,11 @@ void TIM3_IRQHandler(void)
 				iooutput_dev.Mode0Supplying();							//IO输出丢包补发处理函数 跟随车辆输出
 			}
 			break;
+		}
+#endif
+		
+		if (PlatformLESTC == LESTC_ENABLE) {								//使用Lestc
+			LestcSendTimeTick += 1;
 		}
 	}
 }
@@ -968,11 +1023,27 @@ void USART1_IRQHandler(void)
 	}
 #endif
 #endif
-
+	
 #ifdef SOCKET_ENABLE
 #ifdef SOCKET_SERIALPORT_USART1											//SOCKET中断
 	if (PlatformSocket == Socket_ENABLE) {									//根据SN选择是否使能Socket
 		socket_dev.UARTx_IRQ(USART1);
+	}
+#endif
+#endif
+	
+#ifdef SOCKET_EXTEND_ENABLE
+#ifdef SOCKET_EXTEND_SERIALPORT_USART1
+	if (PlatformSocketExtend == SocketExtend_ENABLE) {						//根据SN选择是否使能SocketExtend
+		socket_extend_dev.UARTx_IRQ(USART1);
+	}
+#endif
+#endif
+	
+#ifdef SOCKET_MODULATION_ENABLE
+#ifdef SOCKET_MODULATION_SERIALPORT_USART1
+	if (PlatformSocketModulation == SocketModulation_ENABLE) {					//根据SN选择是否使能SocketModulation
+		socket_modulation_dev.UARTx_IRQ(USART1);
 	}
 #endif
 #endif
@@ -1013,6 +1084,22 @@ void USART2_IRQHandler(void)
 #endif
 #endif
 	
+#ifdef SOCKET_EXTEND_ENABLE
+#ifdef SOCKET_EXTEND_SERIALPORT_USART2
+	if (PlatformSocketExtend == SocketExtend_ENABLE) {						//根据SN选择是否使能SocketExtend
+		socket_extend_dev.UARTx_IRQ(USART2);
+	}
+#endif
+#endif
+	
+#ifdef SOCKET_MODULATION_ENABLE
+#ifdef SOCKET_MODULATION_SERIALPORT_USART2
+	if (PlatformSocketModulation == SocketModulation_ENABLE) {					//根据SN选择是否使能SocketModulation
+		socket_modulation_dev.UARTx_IRQ(USART2);
+	}
+#endif
+#endif
+	
 #ifdef GAT920_ENABLE													//GAT920中断
 #ifdef GAT920_SERIALPORT_USART2
 	if (PlatformGat920 == Gat920_ENABLE) {									//根据SN选择是否使能GAT920
@@ -1044,6 +1131,22 @@ void USART3_IRQHandler(void)
 #ifdef SOCKET_SERIALPORT_USART3											//SOCKET中断
 		if (PlatformSocket == Socket_ENABLE) {								//根据SN选择是否使能Socket
 			socket_dev.UARTx_IRQ(USART3);
+		}
+#endif
+#endif
+
+#ifdef SOCKET_EXTEND_ENABLE
+#ifdef SOCKET_EXTEND_SERIALPORT_USART3
+		if (PlatformSocketExtend == SocketExtend_ENABLE) {					//根据SN选择是否使能SocketExtend
+			socket_extend_dev.UARTx_IRQ(USART3);
+		}
+#endif
+#endif
+	
+#ifdef SOCKET_MODULATION_ENABLE
+#ifdef SOCKET_MODULATION_SERIALPORT_USART3
+		if (PlatformSocketModulation == SocketModulation_ENABLE) {				//根据SN选择是否使能SocketModulation
+			socket_modulation_dev.UARTx_IRQ(USART3);
 		}
 #endif
 #endif
